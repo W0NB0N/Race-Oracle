@@ -1,4 +1,3 @@
-import pygame
 import numpy as np
 import pandas as pd
 import fastf1 as ff1
@@ -6,14 +5,130 @@ import sys
 import os
 from datetime import timedelta
 
-# Initialize pygame
-pygame.init()
-
 # Parameters
 year = 2025
 wknd = 9
 ses = "R"
 drivers = ["HAM", "VER", "LEC"]
+
+# ============================================================
+# STEP 1: LOAD ALL F1 DATA BEFORE INITIALIZING PYGAME
+# ============================================================
+
+print("=" * 60)
+print("RACE ORACLE - F1 RACE REPLAY")
+print("=" * 60)
+
+# Load session
+print(">>> Step 1: Loading F1 session data...")
+print("    (This may take several minutes on first run)")
+session = ff1.get_session(year, wknd, ses)
+session.load()
+
+# Get event name
+event_info = session.event
+if hasattr(event_info, 'EventName'):
+    event_name = str(event_info.EventName)
+elif hasattr(event_info, 'Location'):
+    event_name = str(event_info.Location)
+else:
+    event_name = "RACE"
+
+print(f">>> Step 2: Processing race data for {event_name}...")
+
+# Load complete race timeline for each driver
+driver_data = {}
+all_x = []
+all_y = []
+lap_distances = {}
+
+for driver in drivers:
+    print(f"    Loading {driver}...", end=" ", flush=True)
+    try:
+        laps = session.laps.pick_drivers(driver)
+        
+        if len(laps) > 0:
+            all_telemetry = []
+            cumulative_time = 0
+            lap_distance_list = []
+            
+            for lap_num, lap in laps.iterlaps():
+                try:
+                    tel = lap.get_car_data().add_distance()
+                    pos = lap.get_pos_data()
+                    
+                    lap_time = lap['LapTime']
+                    if pd.isna(lap_time):
+                        continue
+                    
+                    lap_duration = lap_time.total_seconds()
+                    tel_data = pd.merge(tel, pos, left_index=True, right_index=True, how='inner')
+                    
+                    if len(tel_data) == 0:
+                        continue
+                    
+                    # Get max distance for this lap
+                    lap_length = tel_data['Distance'].max()
+                    lap_distance_list.append(lap_length)
+                    
+                    num_points = len(tel_data)
+                    time_per_point = lap_duration / num_points
+                    
+                    for idx, row in tel_data.iterrows():
+                        all_telemetry.append({
+                            'time': cumulative_time + (idx * time_per_point),
+                            'x': row['X'],
+                            'y': row['Y'],
+                            'speed': row['Speed'],
+                            'distance': row['Distance'],
+                            'lap': lap_num
+                        })
+                    
+                    cumulative_time += lap_duration
+                    
+                except Exception as e:
+                    continue
+            
+            if all_telemetry:
+                telemetry_df = pd.DataFrame(all_telemetry)
+                
+                driver_data[driver] = {
+                    'telemetry': telemetry_df,
+                    'total_time': cumulative_time
+                }
+                
+                lap_distances[driver] = lap_distance_list
+                
+                all_x.extend(telemetry_df['x'].values)
+                all_y.extend(telemetry_df['y'].values)
+                
+                print(f"✓ ({len(laps)} laps, {cumulative_time:.1f}s)")
+        
+    except Exception as e:
+        print(f"✗ Failed: {e}")
+
+if not driver_data:
+    print("\n>>> ERROR: No driver data loaded!")
+    sys.exit(1)
+
+# Calculate average lap distance
+avg_lap_distance = np.mean([dist for distances in lap_distances.values() for dist in distances])
+
+# Find maximum race duration
+max_race_time = max([data['total_time'] for data in driver_data.values()])
+
+print(f"\n>>> Step 3: Data processing complete!")
+print(f"    Average lap distance: {avg_lap_distance:.1f}m")
+print(f"    Race duration: {max_race_time/60:.1f} minutes")
+
+# ============================================================
+# STEP 2: NOW INITIALIZE PYGAME AND GRAPHICS
+# ============================================================
+
+print("\n>>> Step 4: Initializing graphics...")
+import pygame
+
+pygame.init()
 
 # Screen settings
 NATIVE_WIDTH, NATIVE_HEIGHT = 640, 400
@@ -23,7 +138,7 @@ HEIGHT = NATIVE_HEIGHT * SCALE_FACTOR
 
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 canvas = pygame.Surface((NATIVE_WIDTH, NATIVE_HEIGHT))
-pygame.display.set_caption(f"TRACKSHIFT - RACE REPLAY")
+pygame.display.set_caption(f"RACE ORACLE - RACE REPLAY")
 clock = pygame.time.Clock()
 
 # Driver colors
@@ -37,6 +152,10 @@ DRIVER_COLORS = {
     'RUS': (0, 200, 200),
     'ALO': (0, 120, 40),
 }
+
+# Add color to driver data
+for driver, data in driver_data.items():
+    data['color'] = DRIVER_COLORS.get(driver, (255, 255, 255))
 
 # Retro color palette
 COLORS = {
@@ -60,8 +179,8 @@ MAP_WIDTH = 480
 PANEL_WIDTH = NATIVE_WIDTH - MAP_WIDTH
 PANEL_X = MAP_WIDTH
 
-# Load and prepare circuit background image
-print(">>> LOADING CIRCUIT MAP...")
+# Load circuit background
+print(">>> Step 5: Loading circuit map...")
 try:
     circuit_img = pygame.image.load('circuit.png')
     
@@ -79,29 +198,10 @@ try:
     circuit_x = (MAP_WIDTH - new_width) // 2
     circuit_y = (NATIVE_HEIGHT - new_height) // 2
     
-    print(f">>> Circuit map loaded: {new_width}x{new_height}")
+    print(f"    Circuit map loaded: {new_width}x{new_height} ✓")
 except Exception as e:
-    print(f">>> WARNING: Could not load circuit image: {e}")
+    print(f"    WARNING: Could not load circuit.png: {e}")
     circuit_img = None
-
-# Load F1 data
-print(">>> INITIALIZING TRACKSHIFT...")
-cache_dir = 'cache'
-if not os.path.exists(cache_dir):
-    os.makedirs(cache_dir)
-ff1.Cache.enable_cache(cache_dir)
-
-session = ff1.get_session(year, wknd, ses)
-session.load()
-
-# Get event name
-event_info = session.event
-if hasattr(event_info, 'EventName'):
-    event_name = str(event_info.EventName)
-elif hasattr(event_info, 'Location'):
-    event_name = str(event_info.Location)
-else:
-    event_name = "RACE"
 
 # Fonts
 font_large = pygame.font.SysFont('courier', 24, bold=True)
@@ -149,93 +249,8 @@ def setup_normalization(all_x, all_y, margin=30):
     track_x_offset = (MAP_WIDTH - x_scaled_range) / 2
     track_y_offset = (NATIVE_HEIGHT - y_scaled_range) / 2
 
-# Load complete race timeline for each driver
-print(">>> LOADING RACE DATA...")
-driver_data = {}
-all_x = []
-all_y = []
-lap_distances = {}  # Store distance per lap for accurate position calculation
-
-for driver in drivers:
-    try:
-        laps = session.laps.pick_drivers(driver)
-        
-        if len(laps) > 0:
-            all_telemetry = []
-            cumulative_time = 0
-            lap_distance_list = []
-            
-            for lap_num, lap in laps.iterlaps():
-                try:
-                    tel = lap.get_car_data().add_distance()
-                    pos = lap.get_pos_data()
-                    
-                    lap_time = lap['LapTime']
-                    if pd.isna(lap_time):
-                        continue
-                    
-                    lap_duration = lap_time.total_seconds()
-                    
-                    tel_data = pd.merge(tel, pos, left_index=True, right_index=True, how='inner')
-                    
-                    if len(tel_data) == 0:
-                        continue
-                    
-                    # Get max distance for this lap (lap length)
-                    lap_length = tel_data['Distance'].max()
-                    lap_distance_list.append(lap_length)
-                    
-                    num_points = len(tel_data)
-                    time_per_point = lap_duration / num_points
-                    
-                    for idx, row in tel_data.iterrows():
-                        all_telemetry.append({
-                            'time': cumulative_time + (idx * time_per_point),
-                            'x': row['X'],
-                            'y': row['Y'],
-                            'speed': row['Speed'],
-                            'distance': row['Distance'],
-                            'lap': lap_num
-                        })
-                    
-                    cumulative_time += lap_duration
-                    
-                except Exception as e:
-                    continue
-            
-            if all_telemetry:
-                telemetry_df = pd.DataFrame(all_telemetry)
-                
-                driver_data[driver] = {
-                    'telemetry': telemetry_df,
-                    'color': DRIVER_COLORS.get(driver, (255, 255, 255)),
-                    'total_time': cumulative_time
-                }
-                
-                lap_distances[driver] = lap_distance_list
-                
-                all_x.extend(telemetry_df['x'].values)
-                all_y.extend(telemetry_df['y'].values)
-                
-                print(f">>> {driver}: {len(laps)} laps, {len(telemetry_df)} points, {cumulative_time:.1f}s")
-        
-    except Exception as e:
-        print(f">>> Failed to load {driver}: {e}")
-
-if not driver_data:
-    print(">>> ERROR: No driver data loaded!")
-    sys.exit(1)
-
-# Calculate average lap distance
-avg_lap_distance = np.mean([dist for distances in lap_distances.values() for dist in distances])
-print(f">>> Average lap distance: {avg_lap_distance:.1f}m")
-
-# Setup global normalization
+# Setup normalization
 setup_normalization(np.array(all_x), np.array(all_y))
-
-# Find maximum race duration
-max_race_time = max([data['total_time'] for data in driver_data.values()])
-print(f">>> Race duration: {max_race_time:.1f}s ({max_race_time/60:.1f} minutes)")
 
 # CRT scanlines
 def apply_crt_effect(surface):
@@ -259,11 +274,9 @@ def get_position_at_time(driver_name, current_time):
     
     row = telemetry.iloc[closest_idx]
     
-    # Calculate total race distance (laps completed + current lap distance)
+    # Calculate total race distance
     lap_num = row['lap']
     distance_in_lap = row['distance']
-    
-    # Total distance = (completed laps * avg lap distance) + distance in current lap
     total_race_distance = ((lap_num - 1) * avg_lap_distance) + distance_in_lap
     
     return {
@@ -283,9 +296,13 @@ speed_multiplier = 5.0
 current_race_time = 0.0
 last_time = pygame.time.get_ticks()
 
-print(">>> TRACKSHIFT READY")
+print("\n>>> RACE ORACLE READY - Starting simulation!")
+print("=" * 60)
 
-# Main loop
+# ============================================================
+# MAIN LOOP
+# ============================================================
+
 while animation_running:
     current_time = pygame.time.get_ticks()
     dt = current_time - last_time
@@ -315,12 +332,12 @@ while animation_running:
     
     canvas.fill(COLORS['bg_dark'])
     
-    # Draw circuit background image
+    # Draw circuit background
     if circuit_img is not None:
         canvas.blit(circuit_img, (circuit_x, circuit_y))
     
     try:
-        # Get positions for all drivers at current race time
+        # Get positions for all drivers
         driver_positions = []
         
         for driver_name, data in driver_data.items():
@@ -341,7 +358,7 @@ while animation_running:
                     'color': data['color']
                 })
         
-        # Sort by TOTAL race distance (accounts for lap differences)
+        # Sort by total race distance
         driver_positions.sort(key=lambda x: x['total_distance'], reverse=True)
         
         # Calculate gaps
@@ -350,7 +367,7 @@ while animation_running:
             for pos in driver_positions:
                 pos['gap'] = leader_distance - pos['total_distance']
         
-        # Draw all drivers (NO TRAILS - just the cars)
+        # Draw all drivers
         for pos_data in driver_positions:
             driver_color = pos_data['color']
             x, y = pos_data['x'], pos_data['y']
@@ -359,7 +376,7 @@ while animation_running:
             if not (0 <= x < MAP_WIDTH and 0 <= y < NATIVE_HEIGHT):
                 continue
             
-            # Draw car (larger and more visible)
+            # Draw car
             pygame.draw.circle(canvas, driver_color, (int(x), int(y)), 7)
             pygame.draw.circle(canvas, COLORS['text_white'], (int(x), int(y)), 7, 2)
             
@@ -370,46 +387,47 @@ while animation_running:
             canvas.blit(label_bg, (int(x) - label.get_width()//2 - 2, int(y) - 18))
             canvas.blit(label, (int(x) - label.get_width()//2, int(y) - 18))
         
-        # # === LEADERBOARD ===
-        # leaderboard_width = 150
-        # leaderboard_height = 20 + len(driver_positions) * 18 + 10
-        # leaderboard_x = 10
-        # leaderboard_y = 10
-        
-        # leaderboard_bg = pygame.Surface((leaderboard_width, leaderboard_height), pygame.SRCALPHA)
-        # leaderboard_bg.fill((*COLORS['leaderboard_bg'], 220))
-        # canvas.blit(leaderboard_bg, (leaderboard_x, leaderboard_y))
-        
-        # pygame.draw.rect(canvas, COLORS['leaderboard_border'], 
-        #                 (leaderboard_x, leaderboard_y, leaderboard_width, leaderboard_height), 2)
-        
-        # lb_y = leaderboard_y + 8
-        # lb_title = font_small.render("LEADERBOARD", True, COLORS['text_yellow'])
-        # canvas.blit(lb_title, (leaderboard_x + 8, lb_y))
-        # lb_y += 20
-        
-        # for idx, pos_data in enumerate(driver_positions):
-        #     pos_num = font_tiny.render(f"{idx+1}", True, COLORS['text_dim'])
-        #     canvas.blit(pos_num, (leaderboard_x + 8, lb_y))
+        # === LEADERBOARD ===
+        leaderboard_width = 150
+        leaderboard_height = 20 + len(driver_positions) * 18 + 10
+        leaderboard_x = 10
+        leaderboard_y = 10
+
+        leaderboard_bg = pygame.Surface((leaderboard_width, leaderboard_height), pygame.SRCALPHA)
+        leaderboard_bg.fill((*COLORS['leaderboard_bg'], 220))
+        canvas.blit(leaderboard_bg, (leaderboard_x, leaderboard_y))
+
+        pygame.draw.rect(canvas, COLORS['leaderboard_border'], 
+                        (leaderboard_x, leaderboard_y, leaderboard_width, leaderboard_height), 2)
+
+        lb_y = leaderboard_y + 8
+        lb_title = font_small.render("LEADERBOARD", True, COLORS['text_yellow'])
+        canvas.blit(lb_title, (leaderboard_x + 8, lb_y))
+        lb_y += 20
+
+        for idx, pos_data in enumerate(driver_positions):
+            pos_num = font_tiny.render(f"{idx+1}", True, COLORS['text_dim'])
+            canvas.blit(pos_num, (leaderboard_x + 8, lb_y))
             
-        #     pygame.draw.circle(canvas, pos_data['color'], (leaderboard_x + 25, lb_y + 6), 3)
+            pygame.draw.circle(canvas, pos_data['color'], (leaderboard_x + 25, lb_y + 6), 3)
             
-        #     driver_text = font_tiny.render(pos_data['driver'], True, COLORS['text_white'])
-        #     canvas.blit(driver_text, (leaderboard_x + 35, lb_y))
+            driver_text = font_tiny.render(pos_data['driver'], True, COLORS['text_white'])
+            canvas.blit(driver_text, (leaderboard_x + 35, lb_y))
             
-        #     # Show gap to leader or "LEAD"
-        #     if idx == 0:
-        #         gap_text = font_tiny.render("LEAD", True, COLORS['text_yellow'])
-        #     else:
-        #         gap_meters = pos_data['gap']
-        #         if gap_meters < 1000:
-        #             gap_str = f"+{gap_meters:.0f}m"
-        #         else:
-        #             gap_str = f"+{gap_meters/1000:.1f}k"
-        #         gap_text = font_tiny.render(gap_str, True, COLORS['text_dim'])
-        #     canvas.blit(gap_text, (leaderboard_x + 75, lb_y))
+            # Show distance gap between positions in meters or kilometers
+            if idx == 0:
+                gap_text = font_tiny.render("LEAD", True, COLORS['text_yellow'])
+            else:
+                gap_meters = driver_positions[idx - 1]['total_distance'] - pos_data['total_distance']
+                if gap_meters < 1000:
+                    gap_str = f"+{gap_meters:.0f}m"
+                else:
+                    gap_str = f"+{gap_meters/1000:.1f}k"
+                gap_text = font_tiny.render(gap_str, True, COLORS['text_dim'])
+            canvas.blit(gap_text, (leaderboard_x + 75, lb_y))
             
-        #     lb_y += 18
+            lb_y += 18
+
         
         # === RIGHT PANEL ===
         pygame.draw.rect(canvas, COLORS['panel_bg'], (PANEL_X, 0, PANEL_WIDTH, NATIVE_HEIGHT))

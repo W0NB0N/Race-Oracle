@@ -6,7 +6,7 @@ This repository provides two Python-based tools for visualizing Formula 1 race d
 
 ## Files Included
 
-### `90s-sim.py`
+### `single-sim.py`
 **Single-Driver Retro Lap Simulator**
 
 - Simulates an F1 driver driving lap-by-lap on a stylized retro display.
@@ -42,11 +42,11 @@ Install dependencies with:
 
 ## How to Run
 
-1. Place `90s-sim.py`, `multi-sim.py`, and your desired circuit map image (renamed as `circuit.png`) in the same directory.
+1. Place `single-sim.py`, `multi-sim.py`, and your desired circuit map image (renamed as `circuit.png`) in the same directory.
 2. Edit the script(s) if you want to change the event parameters (driver, year, etc.).
 3. Run either script using:
 
-`python 90s-sim.py`
+`python single-sim.py`
 
 
 or
